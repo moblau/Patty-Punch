@@ -1,0 +1,75 @@
+# CMake build trees and generated files
+/build*/
+/out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+build.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json
+
+# JUCE-generated plug-in/application artifacts
+*_artefacts/
+JuceLibraryCode/
+*.vst3/
+*.component/
+*.aaxplugin/
+*.lv2/
+
+# Compiled binaries, libraries, and debug data
+*.exe
+*.dll
+*.lib
+*.a
+*.so
+*.dylib
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+
+# Visual Studio and VS Code local state
+.vs/
+.vscode/
+*.sln
+*.slnx
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Other IDE/editor files
+.idea/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# Test, coverage, and runtime output
+Testing/
+test-results/
+coverage/
+*.log
+*.dmp
+
+# Local audio renders and large export/archive files
+/Renders/
+/Exports/
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
