@@ -3,7 +3,7 @@
 namespace
 {
 using PID = juce::ParameterID;
-std::unique_ptr<juce::AudioParameterFloat> fp (const char* id, const char* name,
+std::unique_ptr<juce::AudioParameterFloat> fp (const char* id, const juce::String& name,
     float lo, float hi, float step, float skew, float def, const juce::String& unit)
 {
     juce::NormalisableRange<float> r (lo, hi, step);
@@ -11,6 +11,35 @@ std::unique_ptr<juce::AudioParameterFloat> fp (const char* id, const char* name,
     return std::make_unique<juce::AudioParameterFloat> (
         PID { id, Params::version }, name, r, def,
         juce::AudioParameterFloatAttributes().withLabel (unit));
+}
+
+void addLfoParameters (std::vector<std::unique_ptr<juce::RangedAudioParameter>>& parameters,
+                       size_t index, const char* rateId, const char* shapeId,
+                       const char* pitchId, const char* decayId,
+                       const char* modFromId, const char* warpId)
+{
+    const auto number = juce::String (static_cast<int> (index + 1));
+    parameters.push_back (fp (rateId, "LFO " + number + " Rate", .05f, 20, .001f, 2, 1, "Hz"));
+    parameters.push_back (std::make_unique<juce::AudioParameterChoice> (
+        PID { shapeId, Params::version }, "LFO " + number + " Shape",
+        juce::StringArray { "Sine", "Triangle", "Square" }, 0));
+    parameters.push_back (fp (pitchId, "LFO " + number + " Hat Pitch", 0, 24, .01f, 12, 0, "st"));
+    parameters.push_back (fp (decayId, "LFO " + number + " Hat Decay", 0, 100, .1f, 50, 0, "%"));
+    parameters.push_back (std::make_unique<juce::AudioParameterChoice> (
+        PID { modFromId, Params::version }, "LFO " + number + " Mod From",
+        Params::modSourceNames (index), 0));
+    parameters.push_back (fp (warpId, "LFO " + number + " Warp", -100, 100, .1f, 0, 0, "%"));
+}
+
+void addMissingParameter (juce::ValueTree& state, const char* id, float defaultValue)
+{
+    if (state.getChildWithProperty ("id", id).isValid())
+        return;
+
+    juce::ValueTree parameter { "PARAM" };
+    parameter.setProperty ("id", id, nullptr);
+    parameter.setProperty ("value", defaultValue, nullptr);
+    state.addChild (parameter, -1, nullptr);
 }
 }
 
@@ -39,13 +68,56 @@ juce::AudioProcessorValueTreeState::ParameterLayout Params::createLayout()
     p.push_back (fp (hatHighPass, "Hat High Pass", 3000, 12000, 1, 6000, 6000, "Hz"));
     p.push_back (std::make_unique<juce::AudioParameterBool> (PID { hatChoke, version }, "Hat Choke", true));
     p.push_back (fp (hatLevel, "Hat Level", -60, 6, .01f, -12, -5, "dB"));
-    p.push_back (fp (lfoRate, "Hat LFO Rate", .05f, 20, .001f, 2, 1, "Hz"));
+    // Keep the original parameter IDs and ordering intact for host automation.
+    p.push_back (fp (lfoRate, "LFO 1 Rate", .05f, 20, .001f, 2, 1, "Hz"));
     p.push_back (std::make_unique<juce::AudioParameterChoice> (
-        PID { lfoShape, version }, "Hat LFO Shape", juce::StringArray { "Sine", "Triangle", "Square" }, 0));
-    p.push_back (fp (lfoPitch, "Hat LFO Pitch Depth", 0, 24, .01f, 12, 0, "st"));
-    p.push_back (fp (lfoDecay, "Hat LFO Decay Depth", 0, 100, .1f, 50, 0, "%"));
+        PID { lfoShape, version }, "LFO 1 Shape", juce::StringArray { "Sine", "Triangle", "Square" }, 0));
+    p.push_back (fp (lfoPitch, "LFO 1 Hat Pitch", 0, 24, .01f, 12, 0, "st"));
+    p.push_back (fp (lfoDecay, "LFO 1 Hat Decay", 0, 100, .1f, 50, 0, "%"));
     p.push_back (fp (masterLevel, "Master Level", -60, 6, .01f, -12, -3, "dB"));
+
+    p.push_back (std::make_unique<juce::AudioParameterChoice> (
+        PID { lfo1ModFrom, version }, "LFO 1 Mod From", modSourceNames (0), 0));
+    p.push_back (fp (lfo1Warp, "LFO 1 Warp", -100, 100, .1f, 0, 0, "%"));
+    addLfoParameters (p, 1, lfo2Rate, lfo2Shape, lfo2Pitch, lfo2Decay, lfo2ModFrom, lfo2Warp);
+    addLfoParameters (p, 2, lfo3Rate, lfo3Shape, lfo3Pitch, lfo3Decay, lfo3ModFrom, lfo3Warp);
+    addLfoParameters (p, 3, lfo4Rate, lfo4Shape, lfo4Pitch, lfo4Decay, lfo4ModFrom, lfo4Warp);
     return { p.begin(), p.end() };
+}
+
+void Params::ensureWarblerState (juce::ValueTree& state)
+{
+    // Older sessions contain the four original LFO 1 parameters only. Add every
+    // new child explicitly so loading an old state cannot inherit current values.
+    addMissingParameter (state, lfo1ModFrom, 0);
+    addMissingParameter (state, lfo1Warp, 0);
+    for (const auto* id : { lfo2Shape, lfo2Pitch, lfo2Decay, lfo2ModFrom, lfo2Warp,
+                            lfo3Shape, lfo3Pitch, lfo3Decay, lfo3ModFrom, lfo3Warp,
+                            lfo4Shape, lfo4Pitch, lfo4Decay, lfo4ModFrom, lfo4Warp })
+        addMissingParameter (state, id, 0);
+    for (const auto* id : { lfo2Rate, lfo3Rate, lfo4Rate })
+        addMissingParameter (state, id, 1);
+}
+
+juce::StringArray Params::modSourceNames (size_t targetLfo)
+{
+    juce::StringArray names { "Off" };
+    for (size_t source = 0; source < 4; ++source)
+        if (source != targetLfo)
+            names.add ("LFO " + juce::String (static_cast<int> (source + 1)));
+    return names;
+}
+
+int Params::modSourceForChoice (size_t targetLfo, int choice) noexcept
+{
+    if (choice <= 0 || choice > 3 || targetLfo >= 4)
+        return -1;
+
+    int currentChoice = 0;
+    for (int source = 0; source < 4; ++source)
+        if (source != static_cast<int> (targetLfo) && ++currentChoice == choice)
+            return source;
+    return -1;
 }
 
 void Params::ensureMidiProperties (juce::ValueTree& state)

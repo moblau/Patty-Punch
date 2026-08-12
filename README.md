@@ -40,15 +40,16 @@ The VST3 post-build step copies the bundle to
 The DAW routes MIDI to Patty Punch; the plug-in editor therefore has no hardware
 MIDI selector. The JUCE Standalone wrapper provides hardware audio/MIDI settings.
 
-Default mappings:
+Fixed pitched zones:
 
-- Kick: C3 / MIDI 60
-- Snare: C#3 / MIDI 61
-- Hi-hat: D3 / MIDI 62
+- Kick: C0-B1 / MIDI 24-47 (root C0 / 24)
+- Snare: C2-B2 / MIDI 48-59 (root C2 / 48)
+- Hi-hat: C3-B3 / MIDI 60-71 (root C3 / 60)
 
-Use the `-`/`+` controls or arm `LEARN` and play the next MIDI note to edit a
-mapping. Incoming Note On messages trigger one-shots on every MIDI channel.
-On-screen pads and the A/S/D computer keys trigger kick/snare/hat respectively.
+Each semitone above a zone root transposes that hit by one semitone without
+changing its Tune parameter. Notes outside MIDI 24-71 are ignored. Incoming Note
+On messages trigger one-shots on every MIDI channel. On-screen pads and the A/S/D
+computer keys trigger kick/snare/hat at their respective zone roots.
 
 ## Synthesis
 
@@ -59,8 +60,14 @@ On-screen pads and the A/S/D computer keys trigger kick/snare/hat respectively.
   high-/low-filtered noise forms the wires. Snappy changes their balance.
 - **Hi-hat:** six persistent PolyBLEP square oscillators feed two bright filtered
   paths and a high-pass stage. Eight envelopes overlap without restarting phases.
-  Choke fades old envelopes; the free-running LFO continuously bends oscillator
-  pitch and samples per-hit decay variation.
+  Choke fades old envelopes. WARBLER's four sample-accurate, free-running LFOs
+  continuously bend oscillator pitch and sample per-hit decay variation.
+- **WARBLER:** each LFO offers a 0.05-20 Hz rate, sine/triangle/square shape,
+  hi-hat pitch and decay depth, and one readable `MOD FROM` route. Bipolar Warp
+  bends the target phase by up to a quarter cycle using the source's previous
+  sample, so chains and feedback stay bounded. Live traces and moving dots are
+  published directly from the DSP. The original `lfoRate`, `lfoShape`, `lfoPitch`,
+  and `lfoDecay` parameters remain LFO 1 for session and automation compatibility.
 
 The summed output passes through a 20 Hz DC/high-pass stage, conservative soft
 limiting, and smoothed master gain.

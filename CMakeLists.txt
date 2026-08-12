@@ -36,11 +36,11 @@ target_link_libraries(PattyPunch
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 
 juce_add_console_app(PattyPunchTests PRODUCT_NAME "Patty Punch DSP Tests")
-target_sources(PattyPunchTests PRIVATE Tests/DspTests.cpp Source/Parameters.cpp Source/DrumEngine.cpp)
+target_sources(PattyPunchTests PRIVATE Tests/DspTests.cpp)
 target_include_directories(PattyPunchTests PRIVATE Source)
 target_compile_definitions(PattyPunchTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(PattyPunchTests PRIVATE
-    juce::juce_audio_processors juce::juce_dsp
+    PattyPunch juce::juce_audio_processors juce::juce_dsp
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 add_test(NAME PattyPunchDSP COMMAND PattyPunchTests)
 
