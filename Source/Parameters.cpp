@@ -13,6 +13,25 @@ std::unique_ptr<juce::AudioParameterFloat> fp (const char* id, const juce::Strin
         juce::AudioParameterFloatAttributes().withLabel (unit));
 }
 
+std::unique_ptr<juce::AudioParameterInt> repeatCountParameter (const char* id,
+                                                               const juce::String& name)
+{
+    return std::make_unique<juce::AudioParameterInt> (
+        PID { id, Params::version }, name, 0, 10, 0,
+        juce::AudioParameterIntAttributes().withStringFromValueFunction (
+            [] (int value, int) { return value == 0 ? juce::String { "Off" }
+                                                    : juce::String { value }; }));
+}
+
+void addRepeatParameters (std::vector<std::unique_ptr<juce::RangedAudioParameter>>& parameters,
+                          const juce::String& drum, const char* countId,
+                          const char* timeId, const char* shapeId)
+{
+    parameters.push_back (repeatCountParameter (countId, drum + " Repeat Count"));
+    parameters.push_back (fp (timeId, drum + " Repeat Time", 10, 500, .1f, 90, 90, "ms"));
+    parameters.push_back (fp (shapeId, drum + " Repeat Shape", 0, 100, .1f, 50, 0, "%"));
+}
+
 void addLfoParameters (std::vector<std::unique_ptr<juce::RangedAudioParameter>>& parameters,
                        size_t index, const char* rateId, const char* shapeId,
                        const char* pitchId, const char* decayId,
@@ -40,6 +59,23 @@ void addMissingParameter (juce::ValueTree& state, const char* id, float defaultV
     parameter.setProperty ("id", id, nullptr);
     parameter.setProperty ("value", defaultValue, nullptr);
     state.addChild (parameter, -1, nullptr);
+}
+
+void addLfoRoutes (std::vector<std::unique_ptr<juce::RangedAudioParameter>>& parameters,
+                   size_t index)
+{
+    const auto number = juce::String (static_cast<int> (index + 1));
+    const auto destinations = Params::modDestinationNames();
+    parameters.push_back (std::make_unique<juce::AudioParameterChoice> (
+        PID { Params::lfoTargetA[index], Params::version }, "LFO " + number + " Target A",
+        destinations, 0));
+    parameters.push_back (fp (Params::lfoDepthA[index], "LFO " + number + " Depth A",
+                              -100, 100, .1f, 0, 0, "%"));
+    parameters.push_back (std::make_unique<juce::AudioParameterChoice> (
+        PID { Params::lfoTargetB[index], Params::version }, "LFO " + number + " Target B",
+        destinations, 0));
+    parameters.push_back (fp (Params::lfoDepthB[index], "LFO " + number + " Depth B",
+                              -100, 100, .1f, 0, 0, "%"));
 }
 }
 
@@ -82,6 +118,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout Params::createLayout()
     addLfoParameters (p, 1, lfo2Rate, lfo2Shape, lfo2Pitch, lfo2Decay, lfo2ModFrom, lfo2Warp);
     addLfoParameters (p, 2, lfo3Rate, lfo3Shape, lfo3Pitch, lfo3Decay, lfo3ModFrom, lfo3Warp);
     addLfoParameters (p, 3, lfo4Rate, lfo4Shape, lfo4Pitch, lfo4Decay, lfo4ModFrom, lfo4Warp);
+
+    // New parameters are appended so every pre-existing automation index remains stable.
+    p.push_back (fp (snareDrive, "Snare Drive", 0, 18, .1f, 6, 3, "dB"));
+    p.push_back (fp (tomTune, "Tom Pitch", 55, 440, .1f, 140, 140, "Hz"));
+    p.push_back (fp (tomSweep, "Tom Pitch Bend", 0, 36, .1f, 10, 12, "st"));
+    p.push_back (fp (tomDecay, "Tom Decay", 60, 2500, .1f, 420, 520, "ms"));
+    p.push_back (fp (tomTone, "Tom Damping", 0, 100, .1f, 50, 58, "%"));
+    p.push_back (fp (tomAttack, "Tom Attack", 0, 100, .1f, 50, 22, "%"));
+    p.push_back (fp (tomLevel, "Tom Level", -60, 6, .1f, -12, -3, "dB"));
+    addRepeatParameters (p, "Kick", kickRepeatCount, kickRepeatTime, kickRepeatShape);
+    addRepeatParameters (p, "Snare", snareRepeatCount, snareRepeatTime, snareRepeatShape);
+    addRepeatParameters (p, "Hi-Hat", hatRepeatCount, hatRepeatTime, hatRepeatShape);
+    addRepeatParameters (p, "Tom", tomRepeatCount, tomRepeatTime, tomRepeatShape);
+    for (size_t i = 0; i < 4; ++i)
+        addLfoRoutes (p, i);
     return { p.begin(), p.end() };
 }
 
@@ -99,6 +150,30 @@ void Params::ensureWarblerState (juce::ValueTree& state)
         addMissingParameter (state, id, 1);
 }
 
+void Params::ensureCurrentState (juce::ValueTree& state)
+{
+    ensureWarblerState (state);
+    addMissingParameter (state, snareDrive, 3);
+    addMissingParameter (state, tomTune, 140);
+    addMissingParameter (state, tomSweep, 12);
+    addMissingParameter (state, tomDecay, 520);
+    addMissingParameter (state, tomTone, 58);
+    addMissingParameter (state, tomAttack, 22);
+    addMissingParameter (state, tomLevel, -3);
+    for (const auto* id : { kickRepeatCount, snareRepeatCount, hatRepeatCount, tomRepeatCount,
+                            kickRepeatShape, snareRepeatShape, hatRepeatShape, tomRepeatShape })
+        addMissingParameter (state, id, 0);
+    for (const auto* id : { kickRepeatTime, snareRepeatTime, hatRepeatTime, tomRepeatTime })
+        addMissingParameter (state, id, 90);
+    for (size_t i = 0; i < 4; ++i)
+    {
+        addMissingParameter (state, lfoTargetA[i], 0);
+        addMissingParameter (state, lfoDepthA[i], 0);
+        addMissingParameter (state, lfoTargetB[i], 0);
+        addMissingParameter (state, lfoDepthB[i], 0);
+    }
+}
+
 juce::StringArray Params::modSourceNames (size_t targetLfo)
 {
     juce::StringArray names { "Off" };
@@ -106,6 +181,15 @@ juce::StringArray Params::modSourceNames (size_t targetLfo)
         if (source != targetLfo)
             names.add ("LFO " + juce::String (static_cast<int> (source + 1)));
     return names;
+}
+
+juce::StringArray Params::modDestinationNames()
+{
+    return { "Off",
+             "Kick Pitch", "Kick Sweep", "Kick Decay", "Kick Click", "Kick Drive", "Kick Level",
+             "Snare Pitch", "Snare Decay", "Snare Snappy", "Snare Tone", "Snare Drive", "Snare Level",
+             "Hi-Hat Pitch", "Hi-Hat Decay", "Hi-Hat Tone", "Hi-Hat Character", "Hi-Hat Level",
+             "Tom Pitch", "Tom Bend", "Tom Decay", "Tom Damping", "Tom Attack", "Tom Level" };
 }
 
 int Params::modSourceForChoice (size_t targetLfo, int choice) noexcept
@@ -125,6 +209,7 @@ void Params::ensureMidiProperties (juce::ValueTree& state)
     if (! state.hasProperty (kickNote)) state.setProperty (kickNote, 60, nullptr);
     if (! state.hasProperty (snareNote)) state.setProperty (snareNote, 61, nullptr);
     if (! state.hasProperty (hatNote)) state.setProperty (hatNote, 62, nullptr);
+    if (! state.hasProperty (tomNote)) state.setProperty (tomNote, 63, nullptr);
 }
 
 juce::String Params::frequencyText (float hz)

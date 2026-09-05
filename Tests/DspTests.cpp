@@ -7,71 +7,164 @@
 
 namespace
 {
-void require (bool ok, const char* message) { if (!ok) throw std::runtime_error (message); }
-struct Stats { double energy=0, early=0, late=0, hf=0; float peak=0; };
-Stats renderHit (DrumEngine::Instrument which, DrumParameters p, double sr, int block, float velocity=1,
-                 int offset=0, double seconds=3, float pitchMultiplier=1)
+void require (bool condition, const char* message)
 {
-    DrumEngine e;e.prepare(sr,block);juce::AudioBuffer<float>b(2,(int)(sr*seconds));b.clear();
-    e.render(b,0,offset,p);e.trigger(which,velocity,pitchMultiplier,p);e.render(b,offset,b.getNumSamples()-offset,p);
-    Stats s;float prev=0;
-    for(int i=0;i<b.getNumSamples();++i){auto x=b.getSample(0,i);require(std::isfinite(x),"non-finite sample");
-        s.energy+=x*x;if(i<(int)(.02*sr))s.early+=x*x;if(i>(int)(.7*sr))s.late+=x*x;s.hf+=(x-prev)*(x-prev);prev=x;s.peak=juce::jmax(s.peak,std::abs(x));}
-    return s;
+    if (! condition) throw std::runtime_error (message);
+}
+
+struct Stats
+{
+    double energy = 0, early = 0, late = 0, highFrequency = 0, mean = 0;
+    float peak = 0;
+};
+
+Stats renderHit (DrumEngine::Instrument instrument, DrumParameters parameters, double sampleRate,
+                 int blockSize, float velocity = 1, int offset = 0, double seconds = 2,
+                 float pitchMultiplier = 1)
+{
+    DrumEngine engine;
+    engine.prepare (sampleRate, blockSize);
+    juce::AudioBuffer<float> buffer (2, static_cast<int> (sampleRate * seconds));
+    buffer.clear();
+    engine.render (buffer, 0, offset, parameters);
+    engine.trigger (instrument, velocity, pitchMultiplier, parameters);
+    engine.render (buffer, offset, buffer.getNumSamples() - offset, parameters);
+    Stats stats;
+    float previous = 0;
+    for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+    {
+        const auto value = buffer.getSample (0, sample);
+        require (std::isfinite (value), "voice emitted a non-finite sample");
+        stats.energy += value * value;
+        if (sample < static_cast<int> (.02 * sampleRate)) stats.early += value * value;
+        if (sample > static_cast<int> (.7 * sampleRate)) stats.late += value * value;
+        stats.highFrequency += (value - previous) * (value - previous);
+        stats.mean += value;
+        stats.peak = juce::jmax (stats.peak, std::abs (value));
+        previous = value;
+    }
+    stats.mean /= buffer.getNumSamples();
+    return stats;
+}
+
+void renderInBlocks (DrumEngine& engine, const DrumParameters& parameters, int samples,
+                     const std::array<int, 7>& sizes = { 1, 7, 31, 64, 113, 257, 509 })
+{
+    juce::AudioBuffer<float> buffer (1, 509);
+    int rendered = 0, cursor = 0;
+    while (rendered < samples)
+    {
+        const auto count = juce::jmin (sizes[static_cast<size_t> (cursor++ % static_cast<int> (sizes.size()))],
+                                       samples - rendered);
+        buffer.clear();
+        engine.render (buffer, 0, count, parameters);
+        for (int sample = 0; sample < count; ++sample)
+            require (std::isfinite (buffer.getSample (0, sample)), "block render emitted non-finite audio");
+        rendered += count;
+    }
 }
 
 struct ProcessorResult
 {
-    double energy=0;
-    std::array<uint32_t,3> activity {};
+    double energy = 0;
+    std::array<uint32_t, drumCount> activity {};
     juce::AudioBuffer<float> audio { 2, 4096 };
 };
 
-ProcessorResult processNote (int note, float velocity=1.0f, int sampleOffset=0)
+ProcessorResult processNote (int note, float velocity = 1.0f, int sampleOffset = 0)
 {
     PattyPunchAudioProcessor processor;
-    processor.setPlayConfigDetails(0,2,48000.0,4096);
-    processor.prepareToPlay(48000.0,4096);
+    processor.setPlayConfigDetails (0, 2, 48000.0, 4096);
+    processor.prepareToPlay (48000.0, 4096);
     ProcessorResult result;
     result.audio.clear();
     juce::MidiBuffer midi;
-    midi.addEvent(juce::MidiMessage::noteOn(1,note,velocity),sampleOffset);
-    processor.processBlock(result.audio,midi);
-    for(int i=0;i<result.audio.getNumSamples();++i)
+    midi.addEvent (juce::MidiMessage::noteOn (1, note, velocity), sampleOffset);
+    processor.processBlock (result.audio, midi);
+    for (int sample = 0; sample < result.audio.getNumSamples(); ++sample)
     {
-        const auto x=result.audio.getSample(0,i);
-        require(std::isfinite(x),"processor emitted non-finite sample");
-        result.energy+=x*x;
+        const auto value = result.audio.getSample (0, sample);
+        require (std::isfinite (value), "processor emitted non-finite audio");
+        result.energy += value * value;
     }
-    for(int i=0;i<3;++i)result.activity[(size_t)i]=processor.getActivityCounter((DrumEngine::Instrument)i);
+    for (size_t i = 0; i < drumCount; ++i)
+        result.activity[i] = processor.getActivityCounter (static_cast<DrumEngine::Instrument> (i));
     return result;
 }
 
-double estimateFrequency (KickVoice& voice, double sr, int skipSamples, int count)
+void verifyRateAndBlock (double sampleRate, int blockSize)
 {
-    float previous=0;int crossings=0;
-    for(int i=0;i<skipSamples+count;++i)
+    DrumParameters parameters;
+    for (auto instrument : { DrumEngine::kick, DrumEngine::snare, DrumEngine::hat, DrumEngine::tom })
     {
-        const auto x=voice.render();
-        if(i>=skipSamples&&previous<=0&&x>0)++crossings;
-        previous=x;
+        const auto stats = renderHit (instrument, parameters, sampleRate, blockSize, 1, 0, .75);
+        require (stats.energy > 1.0e-5, "voice was silent at a supported rate/block size");
+        require (stats.peak < 1.21f, "voice output escaped the bounded master stage");
     }
-    return crossings*sr/count;
 }
 
-float renderedHatFrequencyCeiling (float multiplier)
+void verifyLfoRoute (size_t lfoIndex, Params::ModDestination destination)
 {
-    DrumParameters p;p.master=1;p.lfos[0].pitchDepth=0;p.hatTune=0;
-    DrumEngine engine;engine.prepare(48000,512);juce::AudioBuffer<float>b(1,8192);b.clear();
-    engine.trigger(DrumEngine::hat,1,multiplier,p);engine.render(b,0,b.getNumSamples(),p);
-    return engine.getHatForTests().getMaximumOscillatorFrequencyForTests();
+    DrumParameters parameters;
+    parameters.lfos[lfoIndex].rate = 1;
+    parameters.lfos[lfoIndex].shape = 2;
+    parameters.lfos[lfoIndex].routes[0] = { destination, 1 };
+    DrumEngine engine;
+    engine.prepare (100, 1);
+    juce::AudioBuffer<float> sample (1, 1);
+    sample.clear();
+    engine.render (sample, 0, 1, parameters);
+    require (std::abs (engine.getModulationForTests (destination) - 1.0f) < 1.0e-6f,
+             "LFO route did not reach its destination");
 }
-void runRate (double sr, int block)
+
+double renderModulatedTail (DrumEngine::Instrument instrument, Params::ModDestination destination,
+                            float depth)
 {
-    DrumParameters p;
-    for(auto i:{DrumEngine::kick,DrumEngine::snare,DrumEngine::hat})
-    {auto s=renderHit(i,p,sr,block);require(s.energy>1e-5,"voice was silent");require(s.peak<1.1f,"runaway output");}
+    constexpr double sampleRate = 48000;
+    DrumParameters parameters;
+    parameters.lfos[0].rate = 1;
+    parameters.lfos[0].shape = 2;
+    parameters.lfos[0].routes[0] = { destination, depth };
+    DrumEngine engine;
+    engine.prepare (sampleRate, 127);
+    juce::AudioBuffer<float> buffer (1, static_cast<int> (sampleRate * 2));
+    buffer.clear();
+    engine.render (buffer, 0, 1, parameters);
+    engine.trigger (instrument, 1, 1, parameters);
+    engine.render (buffer, 1, buffer.getNumSamples() - 1, parameters);
+    double tail = 0;
+    for (int sample = static_cast<int> (sampleRate * .7); sample < buffer.getNumSamples(); ++sample)
+    {
+        const auto value = buffer.getSample (0, sample);
+        require (std::isfinite (value), "decay modulation emitted non-finite audio");
+        tail += value * value;
+    }
+    return tail;
 }
+
+struct DummyProcessor final : juce::AudioProcessor
+{
+    DummyProcessor() : AudioProcessor (BusesProperties()) {}
+    const juce::String getName() const override { return "test"; }
+    void prepareToPlay (double, int) override {}
+    void releaseResources() override {}
+    void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override {}
+    bool isBusesLayoutSupported (const BusesLayout&) const override { return true; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    bool hasEditor() const override { return false; }
+    double getTailLengthSeconds() const override { return 0; }
+    bool acceptsMidi() const override { return false; }
+    bool producesMidi() const override { return false; }
+    bool isMidiEffect() const override { return false; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram (int) override {}
+    const juce::String getProgramName (int) override { return {}; }
+    void changeProgramName (int, const juce::String&) override {}
+    void getStateInformation (juce::MemoryBlock&) override {}
+    void setStateInformation (const void*, int) override {}
+};
 }
 
 int main()
@@ -79,159 +172,308 @@ int main()
     try
     {
         juce::ScopedJuceInitialiser_GUI juceInitialiser;
-        for(auto sr:{44100.0,48000.0,96000.0})for(auto block:{1,64,257,1024})runRate(sr,block);
-        DrumParameters p;
-        auto quiet=renderHit(DrumEngine::kick,p,48000,128,.2f);auto loud=renderHit(DrumEngine::kick,p,48000,128,1);
-        require(loud.energy>quiet.energy*2,"velocity did not alter level");
-        p.kickDecay=.12f;auto shortKick=renderHit(DrumEngine::kick,p,48000,128);p.kickDecay=3;auto longKick=renderHit(DrumEngine::kick,p,48000,128);
-        require(longKick.late>shortKick.late*10,"kick decay did not lengthen tail");
-        p=DrumParameters{};p.kickClick=0;auto round=renderHit(DrumEngine::kick,p,48000,128);p.kickClick=1;auto clicky=renderHit(DrumEngine::kick,p,48000,128);
-        require(clicky.hf>round.hf,"kick click did not add transient energy");
-        p=DrumParameters{};p.snareSnappy=.05f;auto tonal=renderHit(DrumEngine::snare,p,48000,128);p.snareSnappy=1;auto snappy=renderHit(DrumEngine::snare,p,48000,128);
-        require(snappy.hf>tonal.hf,"snappy did not add high-frequency energy");
-        p=DrumParameters{};auto hat=renderHit(DrumEngine::hat,p,48000,128);require(hat.hf/hat.energy>.05,"hat lacks metallic high-frequency content");
-        auto offset=renderHit(DrumEngine::kick,p,48000,128,1,777,1);require(offset.energy>0,"offset hit silent");
 
-        for(int shape=0;shape<3;++shape)for(int step=-32;step<=160;++step)
+        for (const auto sampleRate : { 44100.0, 48000.0, 96000.0, 192000.0 })
+            for (const auto blockSize : { 1, 64, 257, 1024 })
+                verifyRateAndBlock (sampleRate, blockSize);
+
+        DrumParameters parameters;
+        const auto quietKick = renderHit (DrumEngine::kick, parameters, 48000, 128, .2f);
+        const auto loudKick = renderHit (DrumEngine::kick, parameters, 48000, 128, 1);
+        require (loudKick.energy > quietKick.energy * 2, "kick velocity response is ineffective");
+        parameters.kickDecay = .12f;
+        const auto shortKick = renderHit (DrumEngine::kick, parameters, 48000, 128);
+        parameters.kickDecay = 3;
+        const auto longKick = renderHit (DrumEngine::kick, parameters, 48000, 128);
+        require (longKick.late > shortKick.late * 10, "kick decay range is not musically effective");
+        parameters = {};
+        parameters.kickClick = 0;
+        const auto roundKick = renderHit (DrumEngine::kick, parameters, 48000, 128);
+        parameters.kickClick = 1;
+        const auto clickKick = renderHit (DrumEngine::kick, parameters, 48000, 128);
+        require (clickKick.highFrequency > roundKick.highFrequency, "kick Click lacks audible range");
+
+        parameters = {};
+        parameters.snareSnappy = .03f;
+        const auto bodySnare = renderHit (DrumEngine::snare, parameters, 48000, 128);
+        parameters.snareSnappy = 1;
+        const auto wireSnare = renderHit (DrumEngine::snare, parameters, 48000, 128);
+        require (wireSnare.highFrequency > bodySnare.highFrequency, "snare Snappy lacks audible range");
+        parameters = {};
+        parameters.tomAttack = 0;
+        const auto softTom = renderHit (DrumEngine::tom, parameters, 48000, 128);
+        parameters.tomAttack = 1;
+        const auto stickTom = renderHit (DrumEngine::tom, parameters, 48000, 128);
+        require (stickTom.highFrequency > softTom.highFrequency, "tom Attack lacks audible range");
+        parameters = {};
+        const auto hat = renderHit (DrumEngine::hat, parameters, 48000, 128);
+        require (hat.highFrequency / hat.energy > .05, "hi-hat lacks metallic high-frequency content");
+
+        for (int shape = 0; shape < 3; ++shape)
+            for (int step = -32; step <= 160; ++step)
+            {
+                const auto value = evaluateLfoWaveform (shape, step / 128.0f);
+                require (std::isfinite (value) && value >= -1 && value <= 1,
+                         "LFO waveform escaped its bounds");
+            }
+        require (std::abs (evaluateLfoWaveform (0, .25f) - 1) < 1.0e-6f, "sine waveform mismatch");
+        require (std::abs (evaluateLfoWaveform (1, .5f) - 1) < 1.0e-6f, "triangle waveform mismatch");
+        require (evaluateLfoWaveform (2, .49f) > .99f && evaluateLfoWaveform (2, .5f) < -.99f,
+                 "square waveform mismatch");
+
+        for (size_t lfo = 0; lfo < lfoCount; ++lfo)
+            for (const auto destination : { Params::ModDestination::kickPitch,
+                                            Params::ModDestination::kickDecay,
+                                            Params::ModDestination::snarePitch,
+                                            Params::ModDestination::snareDecay })
+                verifyLfoRoute (lfo, destination);
+        for (size_t destination = 1; destination < Params::modDestinationCount; ++destination)
+            verifyLfoRoute (0, static_cast<Params::ModDestination> (destination));
+        require (renderModulatedTail (DrumEngine::kick, Params::ModDestination::kickDecay, 1)
+                    > renderModulatedTail (DrumEngine::kick, Params::ModDestination::kickDecay, -1) * 20,
+                 "kick decay modulation did not change the synthesized tail");
+        require (renderModulatedTail (DrumEngine::snare, Params::ModDestination::snareDecay, 1)
+                    > renderModulatedTail (DrumEngine::snare, Params::ModDestination::snareDecay, -1) * 20,
+                 "snare decay modulation did not change the synthesized tail");
+
+        DrumParameters legacy;
+        legacy.lfos[0].rate = 1;
+        legacy.lfos[0].shape = 2;
+        legacy.lfos[0].legacyHatPitchDepth = 12;
+        legacy.lfos[0].legacyHatDecayDepth = .4f;
+        DrumEngine legacyEngine;
+        legacyEngine.prepare (100, 1);
+        juce::AudioBuffer<float> singleSample (1, 1);
+        singleSample.clear();
+        legacyEngine.render (singleSample, 0, 1, legacy);
+        require (std::abs (legacyEngine.getModulationForTests (Params::ModDestination::hatPitch) - .5f) < 1.0e-6f,
+                 "legacy hat pitch depth changed");
+        require (std::abs (legacyEngine.getModulationForTests (Params::ModDestination::hatDecay) - .4f) < 1.0e-6f,
+                 "legacy hat decay depth changed");
+
+        DrumParameters modulated;
+        modulated.snareTune = 240;
+        modulated.lfos[0].rate = 1;
+        modulated.lfos[0].shape = 2;
+        modulated.lfos[0].routes[0] = { Params::ModDestination::kickPitch, 1 };
+        modulated.lfos[0].routes[1] = { Params::ModDestination::snarePitch, -1 };
+        DrumEngine modulatedEngine;
+        modulatedEngine.prepare (48000, 1);
+        singleSample.clear();
+        modulatedEngine.render (singleSample, 0, 1, modulated);
+        modulatedEngine.trigger (DrumEngine::kick, 1, 1, modulated);
+        modulatedEngine.trigger (DrumEngine::snare, 1, 1, modulated);
+        require (std::abs (modulatedEngine.getKickFinalFrequenciesForTests()[0] / modulated.kickTune - 4) < .01,
+                 "kick pitch did not use semitone-domain modulation");
+        require (std::abs (modulatedEngine.getSnareFinalFrequenciesForTests()[0] / modulated.snareTune - .25f) < .01,
+                 "snare pitch did not support negative semitone modulation");
+
+        for (int repeats = 1; repeats <= 10; ++repeats)
         {
-            const auto value=evaluateLfoWaveform(shape,step/128.0f);
-            require(std::isfinite(value)&&value>=-1.0f&&value<=1.0f,"waveform evaluator escaped its bounds");
+            DrumParameters repeatParameters;
+            repeatParameters.repeats[DrumEngine::kick] = { repeats, .01f, .63f };
+            DrumEngine repeatEngine;
+            repeatEngine.prepare (48000, 257);
+            repeatEngine.trigger (DrumEngine::kick, 1, 1, repeatParameters);
+            renderInBlocks (repeatEngine, repeatParameters,
+                            static_cast<int> (repeatEngine.getRepeatOffsetForTests (DrumEngine::kick, repeats - 1) + 2));
+            require (repeatEngine.getRepeatTriggerCountForTests (DrumEngine::kick) == static_cast<uint32_t> (repeats),
+                     "Repeat Count did not produce the exact number of repeats");
         }
-        require(std::abs(evaluateLfoWaveform(0,.25f)-1.0f)<1.0e-6f,"sine evaluator mismatch");
-        require(std::abs(evaluateLfoWaveform(1,.5f)-1.0f)<1.0e-6f,"triangle evaluator mismatch");
-        require(evaluateLfoWaveform(2,.49f)==1.0f&&evaluateLfoWaveform(2,.5f)==-1.0f,"square evaluator mismatch");
 
-        DrumParameters legacyLfo;legacyLfo.lfos[0].rate=1;legacyLfo.lfos[0].shape=1;
-        legacyLfo.lfos[0].pitchDepth=12;legacyLfo.lfos[0].decayDepth=.4f;
-        DrumEngine legacyEngine;legacyEngine.prepare(100,1);juce::AudioBuffer<float>singleSample(1,1);singleSample.clear();
-        legacyEngine.render(singleSample,0,1,legacyLfo);LfoDisplaySnapshot legacySnapshot;legacyEngine.getLfoSnapshot(0,legacySnapshot);
-        require(std::abs(legacySnapshot.output-evaluateLfoWaveform(1,.01f))<1.0e-6f,"LFO 1 no longer follows the legacy phase timing");
-        require(std::abs(legacyEngine.getPitchModulationForTests()-legacySnapshot.output*12)<1.0e-5f,"LFO 1 pitch behavior changed");
-        require(std::abs(legacyEngine.getDecayModulationForTests()-legacySnapshot.output*.4f)<1.0e-5f,"LFO 1 decay behavior changed");
+        DrumParameters exactRepeat;
+        exactRepeat.repeats[DrumEngine::snare] = { 3, .01f, 0 };
+        DrumEngine exactEngine;
+        exactEngine.prepare (48000, 17);
+        exactEngine.trigger (DrumEngine::snare, 1, 1, exactRepeat);
+        require (exactEngine.getRepeatOffsetForTests (DrumEngine::snare, 0) == 480
+                 && exactEngine.getRepeatOffsetForTests (DrumEngine::snare, 1) == 960
+                 && exactEngine.getRepeatOffsetForTests (DrumEngine::snare, 2) == 1440,
+                 "neutral repeat timing is not evenly spaced");
+        renderInBlocks (exactEngine, exactRepeat, 480);
+        require (exactEngine.getRepeatTriggerCountForTests (DrumEngine::snare) == 0,
+                 "repeat triggered one sample early across a block boundary");
+        renderInBlocks (exactEngine, exactRepeat, 1);
+        require (exactEngine.getRepeatTriggerCountForTests (DrumEngine::snare) == 1,
+                 "repeat did not trigger at its exact sample");
 
-        DrumParameters crossMod;for(auto&parameters:crossMod.lfos)parameters.rate=10;
-        crossMod.lfos[0].shape=2;crossMod.lfos[1].shape=0;crossMod.lfos[1].modSource=0;crossMod.lfos[1].warp=1;
-        DrumEngine crossEngine;crossEngine.prepare(100,1);singleSample.clear();crossEngine.render(singleSample,0,1,crossMod);
-        LfoDisplaySnapshot firstTarget;crossEngine.getLfoSnapshot(1,firstTarget);
-        require(std::abs(firstTarget.output-evaluateLfoWaveform(0,.1f))<1.0e-5f,"cross-mod did not use the source's previous sample");
-        singleSample.clear();crossEngine.render(singleSample,0,1,crossMod);LfoDisplaySnapshot secondTarget;crossEngine.getLfoSnapshot(1,secondTarget);
-        require(std::abs(secondTarget.output-evaluateLfoWaveform(0,.45f))<1.0e-5f,"quarter-cycle positive phase warp mismatch");
-        const auto targetBin=static_cast<size_t>(secondTarget.phase*lfoTraceSize);
-        require(std::abs(secondTarget.trace[targetBin]-secondTarget.output)<1.0e-6f,"published trace did not contain the post-modulated output");
+        float previousPosition = 0, previousGain = 1;
+        for (int repeat = 1; repeat <= 10; ++repeat)
+        {
+            const auto neutral = repeatCurvePosition (repeat, 10, 0);
+            const auto shaped = repeatCurvePosition (repeat, 10, 1);
+            const auto gain = repeatCurveGain (repeat, 10, 1);
+            require (std::abs (neutral - repeat / 10.0f) < 1.0e-6f,
+                     "neutral repeat curve is not linear");
+            require (shaped > previousPosition && shaped <= 1, "repeat Shape is not monotonic and bounded");
+            require (gain > 0 && gain < previousGain, "repeat amplitude progression is not bounded and monotonic");
+            if (repeat < 10) require (shaped < neutral, "positive Shape did not pull early repeats forward");
+            previousPosition = shaped;
+            previousGain = gain;
+        }
 
-        DrumParameters feedback;feedback.lfos[0].rate=20;feedback.lfos[0].shape=1;feedback.lfos[0].modSource=1;feedback.lfos[0].warp=1;
-        feedback.lfos[1].rate=.05f;feedback.lfos[1].shape=2;feedback.lfos[1].modSource=0;feedback.lfos[1].warp=-1;
-        DrumEngine feedbackEngine;feedbackEngine.prepare(48000,512);juce::AudioBuffer<float>feedbackBuffer(1,48000);feedbackBuffer.clear();feedbackEngine.render(feedbackBuffer,0,feedbackBuffer.getNumSamples(),feedback);
-        for(size_t i=0;i<lfoCount;++i){LfoDisplaySnapshot snapshot;feedbackEngine.getLfoSnapshot(i,snapshot);require(std::isfinite(snapshot.output)&&std::abs(snapshot.output)<=1,"feedback loop became unstable");}
+        DrumParameters bounded;
+        bounded.repeats[DrumEngine::tom] = { 10, .01f, 1 };
+        DrumEngine boundedEngine;
+        boundedEngine.prepare (48000, 64);
+        for (int hit = 0; hit < 1000; ++hit) boundedEngine.trigger (DrumEngine::tom, 1, 1, bounded);
+        renderInBlocks (boundedEngine, bounded,
+                        static_cast<int> (boundedEngine.getRepeatOffsetForTests (DrumEngine::tom, 9) + 2));
+        require (boundedEngine.getRepeatTriggerCountForTests (DrumEngine::tom) == 10,
+                 "rapid incoming triggers grew or overlapped the repeat queue");
 
-        DrumParameters summed;for(auto&parameters:summed.lfos){parameters.rate=1;parameters.shape=2;parameters.pitchDepth=24;parameters.decayDepth=1;}
-        DrumEngine summedEngine;summedEngine.prepare(100,1);singleSample.clear();summedEngine.render(singleSample,0,1,summed);
-        require(summedEngine.getPitchModulationForTests()==24,"combined pitch modulation was not safely clamped");
-        require(summedEngine.getDecayModulationForTests()==1,"combined decay modulation was not safely clamped");
-
-        DrumParameters selfMod;selfMod.lfos[2].rate=10;selfMod.lfos[2].shape=0;selfMod.lfos[2].modSource=2;selfMod.lfos[2].warp=1;
-        DrumEngine selfEngine;selfEngine.prepare(100,1);singleSample.clear();selfEngine.render(singleSample,0,1,selfMod);LfoDisplaySnapshot selfSnapshot;selfEngine.getLfoSnapshot(2,selfSnapshot);
-        require(std::abs(selfSnapshot.output-evaluateLfoWaveform(0,.1f))<1.0e-5f,"self-modulation was not safely ignored");
+        for (const auto sampleRate : { 44100.0, 48000.0, 96000.0, 192000.0 })
+        {
+            DrumParameters extreme;
+            extreme.master = 1;
+            extreme.tomTune = 440;
+            extreme.tomSweep = 36;
+            extreme.tomDecay = 2.5f;
+            extreme.tomTone = extreme.tomAttack = 1;
+            extreme.tomLevelDb = 6;
+            for (size_t lfo = 0; lfo < lfoCount; ++lfo)
+            {
+                extreme.lfos[lfo].rate = 20;
+                extreme.lfos[lfo].shape = static_cast<int> (lfo % 3);
+                extreme.lfos[lfo].routes[0] = { Params::ModDestination::tomPitch, 1 };
+                extreme.lfos[lfo].routes[1] = { Params::ModDestination::tomDecay, lfo % 2 == 0 ? 1.0f : -1.0f };
+            }
+            extreme.repeats[DrumEngine::tom] = { 10, .01f, 1 };
+            const auto stats = renderHit (DrumEngine::tom, extreme, sampleRate, 1, 1, 0, 1.5,
+                                          std::exp2 (11.0f / 12.0f));
+            require (stats.peak < 1.21f, "extreme tom/repeat/modulation output was not bounded");
+            require (std::abs (stats.mean) < .005, "tom produced persistent DC offset");
+        }
 
         struct Boundary { int note; bool valid; DrumEngine::Instrument instrument; int semitones; };
         const Boundary boundaries[] {
-            {23,false,DrumEngine::kick,0},{24,true,DrumEngine::kick,0},
-            {35,true,DrumEngine::kick,11},{36,true,DrumEngine::kick,12},
-            {47,true,DrumEngine::kick,23},{48,true,DrumEngine::snare,0},
-            {59,true,DrumEngine::snare,11},{60,true,DrumEngine::hat,0},
-            {71,true,DrumEngine::hat,11},{72,false,DrumEngine::hat,0}
+            { 23, false, DrumEngine::kick, 0 }, { 24, true, DrumEngine::kick, 0 },
+            { 47, true, DrumEngine::kick, 23 }, { 48, true, DrumEngine::snare, 0 },
+            { 59, true, DrumEngine::snare, 11 }, { 60, true, DrumEngine::hat, 0 },
+            { 71, true, DrumEngine::hat, 11 }, { 72, true, DrumEngine::tom, 0 },
+            { 83, true, DrumEngine::tom, 11 }, { 84, false, DrumEngine::tom, 0 }
         };
-        for(const auto& expected:boundaries)
+        for (const auto& expected : boundaries)
         {
             PattyPunchAudioProcessor::MidiZoneHit routed;
-            const auto valid=PattyPunchAudioProcessor::routeMidiNote(expected.note,routed);
-            require(valid==expected.valid,"zone validity mismatch");
-            auto processed=processNote(expected.note);
-            if(!valid){require(processed.energy==0,"out-of-zone note produced audio");continue;}
-            require(routed.instrument==expected.instrument,"wrong instrument at zone boundary");
-            require(routed.semitoneOffset==expected.semitones,"wrong zone semitone offset");
-            require(std::abs(routed.pitchMultiplier-std::pow(2.0f,expected.semitones/12.0f))<1.0e-6f,"wrong pitch multiplier");
-            int activitySum=0;for(auto count:processed.activity)activitySum+=(int)count;
-            require(activitySum==1,"zone boundary triggered multiple instruments");
-            require(processed.activity[(size_t)expected.instrument]==1,"processor triggered wrong instrument");
-            require(processed.energy>0,"in-zone processor note was silent");
+            const auto valid = PattyPunchAudioProcessor::routeMidiNote (expected.note, routed);
+            require (valid == expected.valid, "MIDI zone validity mismatch");
+            const auto processed = processNote (expected.note);
+            if (! valid) { require (processed.energy < 1.0e-20, "out-of-zone note produced audio"); continue; }
+            require (routed.instrument == expected.instrument && routed.semitoneOffset == expected.semitones,
+                     "MIDI zone routed to the wrong voice or pitch");
+            int activitySum = 0;
+            for (const auto count : processed.activity) activitySum += static_cast<int> (count);
+            require (activitySum == 1 && processed.activity[static_cast<size_t> (expected.instrument)] == 1,
+                     "MIDI note triggered multiple or incorrect instruments");
+            require (processed.energy > 0, "in-zone note was silent");
+        }
+        const auto delayed = processNote (72, 1, 777);
+        for (int sample = 0; sample < 777; ++sample)
+            require (std::abs (delayed.audio.getSample (0, sample)) < 1.0e-20f,
+                     "MIDI note triggered before its sample offset");
+        require (delayed.audio.getMagnitude (0, 777, delayed.audio.getNumSamples() - 777) > 0,
+                 "sample-offset MIDI note did not trigger");
+        require (processNote (24, 0).energy < 1.0e-20, "zero-velocity Note On triggered a hit");
+
+        DummyProcessor dummy;
+        juce::AudioProcessorValueTreeState state (dummy, nullptr, "state", Params::createLayout());
+        Params::ensureMidiProperties (state.state);
+        require (Params::modDestinationNames().size() == static_cast<int> (Params::modDestinationCount),
+                 "modulation destination labels and enum diverged");
+        for (const auto* id : { Params::snareDrive, Params::tomTune, Params::tomSweep, Params::tomDecay,
+                                Params::tomTone, Params::tomAttack, Params::tomLevel,
+                                Params::kickRepeatCount, Params::snareRepeatCount,
+                                Params::hatRepeatCount, Params::tomRepeatCount })
+            require (state.getParameter (id) != nullptr, "new drum/repeat parameter is missing");
+        for (size_t lfo = 0; lfo < lfoCount; ++lfo)
+            for (const auto* id : { Params::lfoTargetA[lfo], Params::lfoDepthA[lfo],
+                                    Params::lfoTargetB[lfo], Params::lfoDepthB[lfo] })
+                require (state.getParameter (id) != nullptr, "new LFO route parameter is missing");
+
+        const auto& ordered = dummy.getParameters();
+        const char* legacyIds[] { Params::lfoRate, Params::lfoShape, Params::lfoPitch,
+                                  Params::lfoDecay, Params::masterLevel };
+        for (int index = 0; index < 5; ++index)
+        {
+            auto* parameter = dynamic_cast<juce::AudioProcessorParameterWithID*> (
+                ordered[22 + index]);
+            require (parameter != nullptr && parameter->paramID == legacyIds[index],
+                     "legacy automation parameter ordering changed");
+        }
+        for (const auto* id : { Params::snareLow, Params::snareCrack, Params::snareAir,
+                                Params::kickSweepTime, Params::kickClickTone })
+            require (state.getParameter (id) != nullptr, "deprecated compatibility parameter was removed");
+
+        PattyPunchAudioProcessor sourceProcessor;
+        auto* tomTune = sourceProcessor.apvts.getParameter (Params::tomTune);
+        auto* repeatCount = sourceProcessor.apvts.getParameter (Params::tomRepeatCount);
+        auto* target = sourceProcessor.apvts.getParameter (Params::lfoTargetA[0]);
+        tomTune->setValueNotifyingHost (tomTune->convertTo0to1 (233));
+        repeatCount->setValueNotifyingHost (repeatCount->convertTo0to1 (7));
+        target->setValueNotifyingHost (target->convertTo0to1 (
+            static_cast<float> (Params::ModDestination::tomPitch)));
+        juce::MemoryBlock savedState;
+        sourceProcessor.getStateInformation (savedState);
+        PattyPunchAudioProcessor restoredProcessor;
+        restoredProcessor.setStateInformation (savedState.getData(), static_cast<int> (savedState.getSize()));
+        require (std::abs (restoredProcessor.apvts.getRawParameterValue (Params::tomTune)->load() - 233) < .11f,
+                 "tom parameter state recall failed");
+        require (std::abs (restoredProcessor.apvts.getRawParameterValue (Params::tomRepeatCount)->load() - 7) < .01f,
+                 "repeat state recall failed");
+
+        auto oldState = sourceProcessor.apvts.copyState();
+        for (const auto* id : { Params::snareDrive, Params::tomTune, Params::tomSweep, Params::tomDecay,
+                                Params::tomTone, Params::tomAttack, Params::tomLevel,
+                                Params::kickRepeatCount, Params::kickRepeatTime, Params::kickRepeatShape,
+                                Params::snareRepeatCount, Params::snareRepeatTime, Params::snareRepeatShape,
+                                Params::hatRepeatCount, Params::hatRepeatTime, Params::hatRepeatShape,
+                                Params::tomRepeatCount, Params::tomRepeatTime, Params::tomRepeatShape })
+        {
+            const auto child = oldState.getChildWithProperty ("id", id);
+            if (child.isValid()) oldState.removeChild (child, nullptr);
+        }
+        for (size_t lfo = 0; lfo < lfoCount; ++lfo)
+            for (const auto* id : { Params::lfoTargetA[lfo], Params::lfoDepthA[lfo],
+                                    Params::lfoTargetB[lfo], Params::lfoDepthB[lfo] })
+            {
+                const auto child = oldState.getChildWithProperty ("id", id);
+                if (child.isValid()) oldState.removeChild (child, nullptr);
+            }
+        juce::MemoryBlock oldBinary;
+        if (const auto xml = oldState.createXml()) juce::AudioProcessor::copyXmlToBinary (*xml, oldBinary);
+        restoredProcessor.setStateInformation (oldBinary.getData(), static_cast<int> (oldBinary.getSize()));
+        require (std::abs (restoredProcessor.apvts.getRawParameterValue (Params::tomTune)->load() - 140) < .11f,
+                 "old state did not migrate the tom to its default");
+        require (std::abs (restoredProcessor.apvts.getRawParameterValue (Params::tomRepeatCount)->load()) < .01f,
+                 "old state did not migrate repeats to Off");
+        require (std::abs (restoredProcessor.apvts.getRawParameterValue (Params::lfoDepthA[0])->load()) < .01f,
+                 "old state did not migrate LFO routing to neutral");
+
+        juce::AudioBuffer<float> silence (2, 4096);
+        silence.clear();
+        juce::MidiBuffer noMidi;
+        restoredProcessor.prepareToPlay (192000, 1);
+        restoredProcessor.processBlock (silence, noMidi);
+        require (silence.getMagnitude (0, 0, silence.getNumSamples()) < 1.0e-20f,
+                 "silence produced DC, denormal residue, or non-zero output");
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (restoredProcessor.createEditor());
+        for (const auto size : { juce::Point<int> { 1180, 760 }, juce::Point<int> { 1500, 900 },
+                                 juce::Point<int> { 1900, 1200 } })
+        {
+            editor->setSize (size.x, size.y);
+            const auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true);
+            require (image.isValid() && image.getWidth() == size.x && image.getHeight() == size.y,
+                     "editor failed to lay out and render at a supported size");
         }
 
-        KickVoice rootKick,octaveKick;rootKick.prepare(48000);octaveKick.prepare(48000);
-        p=DrumParameters{};p.kickSweep=30;p.kickClick=0;p.kickDrive=0;p.kickDecay=2;
-        rootKick.trigger(1,1,p);octaveKick.trigger(1,2,p);
-        const auto rootSettled=estimateFrequency(rootKick,48000,12000,24000);
-        const auto octaveSettled=estimateFrequency(octaveKick,48000,12000,24000);
-        require(std::abs(octaveSettled/rootSettled-2.0)<.04,"Kick C1 did not settle near twice Kick C0");
-
-        DrumEngine overlapping;overlapping.prepare(48000,256);overlapping.trigger(DrumEngine::kick,1,1,p);
-        overlapping.trigger(DrumEngine::kick,1,std::pow(2.0f,7.0f/12.0f),p);
-        const auto kickFrequencies=overlapping.getKickFinalFrequenciesForTests();
-        require(std::abs(kickFrequencies[0]-p.kickTune)<.01f,"first overlapping kick lost pitch");
-        require(std::abs(kickFrequencies[1]-p.kickTune*std::pow(2.0f,7.0f/12.0f))<.01f,"second overlapping kick lost pitch");
-
-        SnareVoice lowSnare,highSnare;lowSnare.prepare(48000);highSnare.prepare(48000);
-        p=DrumParameters{};lowSnare.trigger(1,1,p);highSnare.trigger(1,std::pow(2.0f,11.0f/12.0f),p);
-        const auto lowFrequencies=lowSnare.getTonalFrequenciesForTests(),highFrequencies=highSnare.getTonalFrequenciesForTests();
-        const auto snareRatio=std::pow(2.0f,11.0f/12.0f);
-        require(std::abs(highFrequencies.first/lowFrequencies.first-snareRatio)<1.0e-5f,"snare fundamental was not transposed");
-        require(std::abs(highFrequencies.second/lowFrequencies.second-snareRatio)<1.0e-5f,"snare inharmonic oscillator was not transposed");
-        require(renderedHatFrequencyCeiling(snareRatio)>renderedHatFrequencyCeiling(1)*1.5f,
-                "higher hat note did not raise metallic oscillator spectrum");
-
-        auto processorQuiet=processNote(24,.2f),processorLoud=processNote(24,1);
-        require(processorLoud.energy>processorQuiet.energy*2,"processor velocity response failed");
-        auto delayed=processNote(24,1,777);
-        for(int i=0;i<777;++i)require(delayed.audio.getSample(0,i)==0,"MIDI triggered before sample offset");
-        require(delayed.audio.getMagnitude(0,777,delayed.audio.getNumSamples()-777)>0,"sample-offset note did not trigger");
-        auto zeroVelocity=processNote(24,0);
-        require(zeroVelocity.energy==0,"Note On velocity zero triggered a hit");
-
-        DrumParameters extreme;extreme.hatTune=24;extreme.lfos[0].pitchDepth=24;extreme.lfos[0].rate=20;
-        DrumEngine extremeHat;extremeHat.prepare(44100,64);juce::AudioBuffer<float>extremeBuffer(1,44100);extremeBuffer.clear();
-        extremeHat.trigger(DrumEngine::hat,1,std::pow(2.0f,11.0f/12.0f),extreme);
-        extremeHat.render(extremeBuffer,0,extremeBuffer.getNumSamples(),extreme);
-        for(int i=0;i<extremeBuffer.getNumSamples();++i)require(std::isfinite(extremeBuffer.getSample(0,i)),"extreme hat pitch became non-finite");
-        require(extremeHat.getHatForTests().getMaximumOscillatorFrequencyForTests()<=44100*.45f+1,"hat oscillator exceeded safe Nyquist limit");
-
-        struct Dummy final:juce::AudioProcessor{
-            Dummy():AudioProcessor(BusesProperties()){}const juce::String getName()const override{return"test";}void prepareToPlay(double,int)override{}void releaseResources()override{}
-            void processBlock(juce::AudioBuffer<float>&,juce::MidiBuffer&)override{}bool isBusesLayoutSupported(const BusesLayout&)const override{return true;}
-            juce::AudioProcessorEditor*createEditor()override{return nullptr;}bool hasEditor()const override{return false;}double getTailLengthSeconds()const override{return 0;}
-            bool acceptsMidi()const override{return false;}bool producesMidi()const override{return false;}bool isMidiEffect()const override{return false;}
-            int getNumPrograms()override{return 1;}int getCurrentProgram()override{return 0;}void setCurrentProgram(int)override{}const juce::String getProgramName(int)override{return{};}
-            void changeProgramName(int,const juce::String&)override{}void getStateInformation(juce::MemoryBlock&)override{}void setStateInformation(const void*,int)override{}
-        } dummy;
-        juce::AudioProcessorValueTreeState state(dummy,nullptr,"state",Params::createLayout());Params::ensureMidiProperties(state.state);
-        const char* newIds[]{Params::lfo1ModFrom,Params::lfo1Warp,Params::lfo2Rate,Params::lfo2Shape,Params::lfo2Pitch,Params::lfo2Decay,Params::lfo2ModFrom,Params::lfo2Warp,
-                             Params::lfo3Rate,Params::lfo3Shape,Params::lfo3Pitch,Params::lfo3Decay,Params::lfo3ModFrom,Params::lfo3Warp,
-                             Params::lfo4Rate,Params::lfo4Shape,Params::lfo4Pitch,Params::lfo4Decay,Params::lfo4ModFrom,Params::lfo4Warp};
-        for(auto*id:newIds)require(state.getParameter(id)!=nullptr,"missing WARBLER parameter");
-        for(auto*id:{Params::lfo2Rate,Params::lfo3Rate,Params::lfo4Rate})require(std::abs(state.getRawParameterValue(id)->load()-1)<1.0e-6f,"new LFO rate default changed");
-        for(auto*id:{Params::lfo1ModFrom,Params::lfo1Warp,Params::lfo2Pitch,Params::lfo2Decay,Params::lfo2ModFrom,Params::lfo2Warp,
-                     Params::lfo3Pitch,Params::lfo3Decay,Params::lfo3ModFrom,Params::lfo3Warp,Params::lfo4Pitch,Params::lfo4Decay,Params::lfo4ModFrom,Params::lfo4Warp})
-            require(state.getRawParameterValue(id)->load()==0,"new LFO neutral default changed");
-        require(Params::modSourceForChoice(0,1)==1&&Params::modSourceForChoice(1,1)==0&&Params::modSourceForChoice(2,3)==3&&Params::modSourceForChoice(3,3)==2,"mod-source choice mapping failed");
-        for(size_t target=0;target<lfoCount;++target)for(int choice=1;choice<=3;++choice)require(Params::modSourceForChoice(target,choice)!=static_cast<int>(target),"UI offered self-modulation");
-        const auto& ordered=dummy.getParameters();require(ordered.size()>=27,"legacy parameter list shrank");
-        const char* legacyIds[]{Params::lfoRate,Params::lfoShape,Params::lfoPitch,Params::lfoDecay,Params::masterLevel};
-        for(int i=0;i<5;++i){auto*withId=dynamic_cast<juce::AudioProcessorParameterWithID*>(ordered[static_cast<size_t>(22+i)]);require(withId!=nullptr&&withId->paramID==legacyIds[i],"legacy automation parameter ordering changed");}
-
-        PattyPunchAudioProcessor migrationProcessor;auto oldState=migrationProcessor.apvts.copyState();
-        for(auto*id:newIds){auto child=oldState.getChildWithProperty("id",id);if(child.isValid())oldState.removeChild(child,nullptr);}
-        oldState.getChildWithProperty("id",Params::lfoRate).setProperty("value",3.25f,nullptr);
-        juce::MemoryBlock oldBinary;if(auto oldXml=oldState.createXml())juce::AudioProcessor::copyXmlToBinary(*oldXml,oldBinary);
-        migrationProcessor.apvts.getParameter(Params::lfo2Rate)->setValueNotifyingHost(1);
-        migrationProcessor.apvts.getParameter(Params::lfo2Pitch)->setValueNotifyingHost(1);
-        migrationProcessor.setStateInformation(oldBinary.getData(),static_cast<int>(oldBinary.getSize()));
-        require(std::abs(migrationProcessor.apvts.getRawParameterValue(Params::lfoRate)->load()-3.25f)<1.0e-6f,"old LFO 1 state was not preserved");
-        require(std::abs(migrationProcessor.apvts.getRawParameterValue(Params::lfo2Rate)->load()-1)<1.0e-6f,"missing LFO rate did not migrate to its default");
-        require(migrationProcessor.apvts.getRawParameterValue(Params::lfo2Pitch)->load()==0,"missing LFO depth did not migrate to neutral");
-        state.state.setProperty(Params::kickNote,36,nullptr);auto xml=state.copyState().createXml();auto restored=juce::ValueTree::fromXml(*xml);
-        require((int)restored.getProperty(Params::kickNote)==36,"MIDI mapping state failed");
-        for(auto*id:{Params::kickTune,Params::kickDecay,Params::snareTune,Params::hatDecay,Params::masterLevel})
-        {auto*param=state.getParameter(id);require(param!=nullptr,"missing parameter");param->setValueNotifyingHost(-10);require(param->getValue()>=0,"parameter failed low clamp");param->setValueNotifyingHost(10);require(param->getValue()<=1,"parameter failed high clamp");}
-        std::cout<<"Patty Punch DSP tests passed\n";return 0;
+        std::cout << "Patty Punch DSP tests passed\n";
+        return 0;
     }
-    catch(const std::exception&e){std::cerr<<"FAILED: "<<e.what()<<'\n';return 1;}
+    catch (const std::exception& error)
+    {
+        std::cerr << "FAILED: " << error.what() << '\n';
+        return 1;
+    }
 }

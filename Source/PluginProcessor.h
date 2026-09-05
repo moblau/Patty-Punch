@@ -26,7 +26,7 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 5.0; }
+    double getTailLengthSeconds() const override { return 13.0; }
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
     void setCurrentProgram (int) override {}
@@ -52,7 +52,7 @@ private:
     juce::AbstractFifo uiFifo { 32 };
     std::array<UiHit, 32> uiHits {};
     DrumEngine engine;
-    std::array<std::atomic<uint32_t>,3> activity {};
+    std::array<std::atomic<uint32_t>, drumCount> activity {};
     std::atomic<float> outputMeter { 0 };
 
     struct RawLfoParameters
@@ -63,6 +63,14 @@ private:
         std::atomic<float>* decay=nullptr;
         std::atomic<float>* modFrom=nullptr;
         std::atomic<float>* warp=nullptr;
+        std::array<std::atomic<float>*, 2> targets {};
+        std::array<std::atomic<float>*, 2> depths {};
+    };
+    struct RawRepeatParameters
+    {
+        std::atomic<float>* count = nullptr;
+        std::atomic<float>* time = nullptr;
+        std::atomic<float>* shape = nullptr;
     };
     struct RawParameters
     {
@@ -74,9 +82,14 @@ private:
         std::atomic<float>* snareSnappy=nullptr; std::atomic<float>* snareTone=nullptr;
         std::atomic<float>* snareLow=nullptr; std::atomic<float>* snareCrack=nullptr;
         std::atomic<float>* snareAir=nullptr; std::atomic<float>* snareLevel=nullptr;
+        std::atomic<float>* snareDrive=nullptr;
         std::atomic<float>* hatTune=nullptr; std::atomic<float>* hatDecay=nullptr;
         std::atomic<float>* hatTone=nullptr; std::atomic<float>* hatHighPass=nullptr;
         std::atomic<float>* hatChoke=nullptr; std::atomic<float>* hatLevel=nullptr;
+        std::atomic<float>* tomTune=nullptr; std::atomic<float>* tomSweep=nullptr;
+        std::atomic<float>* tomDecay=nullptr; std::atomic<float>* tomTone=nullptr;
+        std::atomic<float>* tomAttack=nullptr; std::atomic<float>* tomLevel=nullptr;
+        std::array<RawRepeatParameters, drumCount> repeats {};
         std::array<RawLfoParameters,lfoCount> lfos {};
         std::atomic<float>* masterLevel=nullptr;
     } raw;

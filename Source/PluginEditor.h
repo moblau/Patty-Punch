@@ -39,15 +39,18 @@ class InstrumentPanel final : public juce::Component
 {
 public:
     InstrumentPanel (PattyPunchAudioProcessor&, DrumEngine::Instrument,
-                     const juce::String&, std::initializer_list<std::tuple<const char*,const char*,const char*>>);
+                     const juce::String&,
+                     std::initializer_list<std::tuple<const char*,const char*,const char*>> mainControls,
+                     std::initializer_list<std::tuple<const char*,const char*,const char*>> repeatControls);
     void resized() override;
     void update();
     PerformancePad pad;
 private:
     PattyPunchAudioProcessor& processor;
     DrumEngine::Instrument instrument;
-    juce::Label title, note;
+    juce::Label title, note, repeatTitle;
     std::vector<std::unique_ptr<ParamKnob>> knobs;
+    size_t mainControlCount = 0;
     uint32_t lastActivity=0;
 };
 
@@ -68,8 +71,9 @@ class LfoCard final : public juce::Component
 {
 public:
     LfoCard (PattyPunchAudioProcessor&, size_t index, juce::Colour accent,
-             const char* rateId, const char* shapeId, const char* pitchId,
-             const char* decayId, const char* modFromId, const char* warpId);
+             const char* rateId, const char* shapeId, const char* modFromId,
+             const char* warpId, const char* targetAId, const char* depthAId,
+             const char* targetBId, const char* depthBId);
     void paint (juce::Graphics&) override;
     void resized() override;
     void update();
@@ -77,11 +81,12 @@ private:
     PattyPunchAudioProcessor& processor;
     size_t index;
     juce::Colour accent;
-    juce::Label title, shapeLabel, modFromLabel;
+    juce::Label title, shapeLabel, modFromLabel, targetALabel, targetBLabel;
     LfoWaveform waveform;
-    ParamKnob rate, pitch, decay, warp;
-    juce::ComboBox shape, modFrom;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> shapeAttachment, modFromAttachment;
+    ParamKnob rate, depthA, depthB, warp;
+    juce::ComboBox shape, modFrom, targetA, targetB;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> shapeAttachment,
+        modFromAttachment, targetAAttachment, targetBAttachment;
 };
 
 class PattyPunchAudioProcessorEditor final : public juce::AudioProcessorEditor,
@@ -95,11 +100,11 @@ public:
     bool keyPressed (const juce::KeyPress&) override;
 private:
     void timerCallback() override;
-    PattyPunchAudioProcessor& processor;
+    PattyPunchAudioProcessor& audioProcessor;
     PattyLookAndFeel look;
     juce::Label logo, subtitle, masterLabel, warblerTitle, warblerSubtitle;
     ParamKnob master;
-    InstrumentPanel kick, snare, hat;
+    InstrumentPanel kick, snare, hat, tom;
     std::array<std::unique_ptr<LfoCard>,lfoCount> lfoCards;
     juce::ToggleButton choke { "CHOKE" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> chokeAttachment;

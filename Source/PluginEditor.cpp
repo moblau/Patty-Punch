@@ -42,21 +42,29 @@ void PerformancePad::paintButton(juce::Graphics&g,bool over,bool down)
 }
 
 InstrumentPanel::InstrumentPanel(PattyPunchAudioProcessor&p,DrumEngine::Instrument i,const juce::String&t,
- std::initializer_list<std::tuple<const char*,const char*,const char*>> defs):pad("PUNCH"),processor(p),instrument(i)
+ std::initializer_list<std::tuple<const char*,const char*,const char*>> mainDefs,
+ std::initializer_list<std::tuple<const char*,const char*,const char*>> repeatDefs):pad("PUNCH"),processor(p),instrument(i)
 {
     title.setText(t,juce::dontSendNotification);title.setFont(juce::FontOptions(22,juce::Font::bold));title.setJustificationType(juce::Justification::centred);
     note.setJustificationType(juce::Justification::centred);note.setFont(juce::FontOptions(12));
     note.setText(PattyPunchAudioProcessor::zoneLabel(instrument),juce::dontSendNotification);
-    for(auto&d:defs){auto k=std::make_unique<ParamKnob>(p.apvts,std::get<0>(d),std::get<1>(d),std::get<2>(d));addAndMakeVisible(*k);knobs.push_back(std::move(k));}
-    addAndMakeVisible(title);addAndMakeVisible(note);addAndMakeVisible(pad);
+    repeatTitle.setText("REPEAT PERFORMANCE",juce::dontSendNotification);repeatTitle.setJustificationType(juce::Justification::centred);
+    repeatTitle.setFont(juce::FontOptions(9,juce::Font::bold));repeatTitle.setColour(juce::Label::textColourId,cream.withAlpha(.6f));
+    for(auto&d:mainDefs){auto k=std::make_unique<ParamKnob>(p.apvts,std::get<0>(d),std::get<1>(d),std::get<2>(d));addAndMakeVisible(*k);knobs.push_back(std::move(k));}
+    mainControlCount=knobs.size();
+    for(auto&d:repeatDefs){auto k=std::make_unique<ParamKnob>(p.apvts,std::get<0>(d),std::get<1>(d),std::get<2>(d));addAndMakeVisible(*k);knobs.push_back(std::move(k));}
+    addAndMakeVisible(title);addAndMakeVisible(note);addAndMakeVisible(repeatTitle);addAndMakeVisible(pad);
     pad.onClick=[this]{processor.enqueuePad(instrument);};
     update();
 }
 void InstrumentPanel::resized()
 {
-    auto r=getLocalBounds().reduced(8);title.setBounds(r.removeFromTop(28));note.setBounds(r.removeFromTop(24));
-    pad.setBounds(r.removeFromBottom(62).reduced(6));const auto cols=juce::jmin(4,(int)knobs.size());const auto rows=((int)knobs.size()+cols-1)/cols;
-    for(size_t i=0;i<knobs.size();++i){auto w=r.getWidth()/cols;auto h=r.getHeight()/juce::jmax(1,rows);knobs[i]->setBounds(r.getX()+(int)i%cols*w,r.getY()+(int)i/cols*h,w,h);}
+    auto r=getLocalBounds().reduced(6);title.setBounds(r.removeFromTop(26));note.setBounds(r.removeFromTop(20));
+    pad.setBounds(r.removeFromBottom(52).reduced(5));auto repeatArea=r.removeFromBottom(93);repeatTitle.setBounds(repeatArea.removeFromTop(14));
+    const auto repeatCount=knobs.size()-mainControlCount;const auto repeatWidth=repeatArea.getWidth()/juce::jmax(1,(int)repeatCount);
+    for(size_t i=0;i<repeatCount;++i)knobs[mainControlCount+i]->setBounds(repeatArea.getX()+(int)i*repeatWidth,repeatArea.getY(),repeatWidth,repeatArea.getHeight());
+    const auto cols=3;const auto rows=((int)mainControlCount+cols-1)/cols;
+    for(size_t i=0;i<mainControlCount;++i){auto w=r.getWidth()/cols;auto h=r.getHeight()/juce::jmax(1,rows);knobs[i]->setBounds(r.getX()+(int)i%cols*w,r.getY()+(int)i/cols*h,w,h);}
 }
 void InstrumentPanel::update()
 {
@@ -93,20 +101,28 @@ void LfoWaveform::paint(juce::Graphics&g)
 }
 
 LfoCard::LfoCard(PattyPunchAudioProcessor&p,size_t lfoIndex,juce::Colour colour,const char*rateId,const char*shapeId,
-                 const char*pitchId,const char*decayId,const char*modFromId,const char*warpId)
+                 const char*modFromId,const char*warpId,const char*targetAId,const char*depthAId,
+                 const char*targetBId,const char*depthBId)
 :processor(p),index(lfoIndex),accent(colour),waveform(colour),rate(p.apvts,rateId,"RATE","Free-running LFO rate"),
- pitch(p.apvts,pitchId,"HAT PITCH","Continuous hi-hat pitch depth"),decay(p.apvts,decayId,"HAT DECAY","Per-hit hi-hat decay depth"),
+ depthA(p.apvts,depthAId,"DEPTH A","Bipolar amount applied to Target A"),
+ depthB(p.apvts,depthBId,"DEPTH B","Bipolar amount applied to Target B"),
  warp(p.apvts,warpId,"WARP","Bipolar phase-warp amount")
 {
     title.setText("LFO "+juce::String(static_cast<int>(index+1)),juce::dontSendNotification);title.setFont(juce::FontOptions(15,juce::Font::bold));title.setColour(juce::Label::textColourId,accent);
     shapeLabel.setText("SHAPE",juce::dontSendNotification);modFromLabel.setText("MOD FROM",juce::dontSendNotification);
-    for(auto*label:{&shapeLabel,&modFromLabel}){label->setFont(juce::FontOptions(9,juce::Font::bold));label->setJustificationType(juce::Justification::centredLeft);label->setColour(juce::Label::textColourId,cream.withAlpha(.65f));}
+    targetALabel.setText("TARGET A",juce::dontSendNotification);targetBLabel.setText("TARGET B",juce::dontSendNotification);
+    for(auto*label:{&shapeLabel,&modFromLabel,&targetALabel,&targetBLabel}){label->setFont(juce::FontOptions(9,juce::Font::bold));label->setJustificationType(juce::Justification::centredLeft);label->setColour(juce::Label::textColourId,cream.withAlpha(.65f));}
     shape.addItemList({"SINE","TRIANGLE","SQUARE"},1);shape.setTooltip("Base waveform before phase warp");
     auto sourceNames=Params::modSourceNames(index);for(auto&name:sourceNames)name=name.toUpperCase();modFrom.addItemList(sourceNames,1);modFrom.setTooltip("Choose the LFO that bends this waveform");
+    auto destinations=Params::modDestinationNames();for(auto&name:destinations)name=name.toUpperCase();
+    targetA.addItemList(destinations,1);targetB.addItemList(destinations,1);
+    targetA.setTooltip("First modulation destination");targetB.setTooltip("Second modulation destination");
     shapeAttachment=std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(p.apvts,shapeId,shape);
     modFromAttachment=std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(p.apvts,modFromId,modFrom);
-    for(auto*knob:{&rate,&pitch,&decay,&warp})knob->setAccentColour(accent);
-    std::array<juce::Component*,10> components{&title,&waveform,&rate,&pitch,&decay,&warp,&shapeLabel,&modFromLabel,&shape,&modFrom};
+    targetAAttachment=std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(p.apvts,targetAId,targetA);
+    targetBAttachment=std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(p.apvts,targetBId,targetB);
+    for(auto*knob:{&rate,&depthA,&depthB,&warp})knob->setAccentColour(accent);
+    std::array<juce::Component*,14> components{&title,&waveform,&rate,&depthA,&depthB,&warp,&shapeLabel,&modFromLabel,&targetALabel,&targetBLabel,&shape,&modFrom,&targetA,&targetB};
     for(auto*component:components)addAndMakeVisible(component);
 }
 void LfoCard::paint(juce::Graphics&g)
@@ -116,10 +132,12 @@ void LfoCard::paint(juce::Graphics&g)
 }
 void LfoCard::resized()
 {
-    auto r=getLocalBounds().reduced(8);title.setBounds(r.removeFromTop(20));waveform.setBounds(r.removeFromTop(66));r.removeFromTop(3);
-    auto knobs=r.removeFromTop(72);const auto knobWidth=knobs.getWidth()/4;rate.setBounds(knobs.removeFromLeft(knobWidth));pitch.setBounds(knobs.removeFromLeft(knobWidth));decay.setBounds(knobs.removeFromLeft(knobWidth));warp.setBounds(knobs);
+    auto r=getLocalBounds().reduced(8);title.setBounds(r.removeFromTop(20));waveform.setBounds(r.removeFromTop(58));r.removeFromTop(2);
+    auto knobs=r.removeFromTop(68);const auto knobWidth=knobs.getWidth()/4;rate.setBounds(knobs.removeFromLeft(knobWidth));depthA.setBounds(knobs.removeFromLeft(knobWidth));depthB.setBounds(knobs.removeFromLeft(knobWidth));warp.setBounds(knobs);
     r.removeFromTop(2);auto labels=r.removeFromTop(13);const auto half=labels.getWidth()/2;shapeLabel.setBounds(labels.removeFromLeft(half).reduced(3,0));modFromLabel.setBounds(labels.reduced(3,0));
     auto combos=r.removeFromTop(27);shape.setBounds(combos.removeFromLeft(combos.getWidth()/2).reduced(2,1));modFrom.setBounds(combos.reduced(2,1));
+    auto targetLabels=r.removeFromTop(13);targetALabel.setBounds(targetLabels.removeFromLeft(targetLabels.getWidth()/2).reduced(3,0));targetBLabel.setBounds(targetLabels.reduced(3,0));
+    auto targets=r.removeFromTop(27);targetA.setBounds(targets.removeFromLeft(targets.getWidth()/2).reduced(2,1));targetB.setBounds(targets.reduced(2,1));
 }
 void LfoCard::update()
 {
@@ -128,25 +146,33 @@ void LfoCard::update()
 }
 
 PattyPunchAudioProcessorEditor::PattyPunchAudioProcessorEditor(PattyPunchAudioProcessor&p)
-:AudioProcessorEditor(&p),processor(p),master(p.apvts,Params::masterLevel,"MASTER","Overall output level"),
- kick(p,DrumEngine::kick,"KICK",{{Params::kickTune,"TUNE","Pitch of C0, the lowest note in the Kick zone"},{Params::kickDecay,"DECAY","Body decay time"},{Params::kickSweep,"SWEEP","Pitch sweep depth"},{Params::kickSweepTime,"SWEEP TIME","Pitch sweep duration"},{Params::kickClick,"CLICK","Transient amount"},{Params::kickClickTone,"CLICK TONE","Transient low-pass cutoff"},{Params::kickDrive,"DRIVE","Soft saturation"},{Params::kickLevel,"LEVEL","Kick output level"}}),
- snare(p,DrumEngine::snare,"SNARE",{{Params::snareTune,"TUNE","Pitch of C2, the lowest note in the Snare zone"},{Params::snareDecay,"DECAY","Snare duration"},{Params::snareSnappy,"SNAPPY","Noise balance"},{Params::snareTone,"TONE","Noise cutoff"},{Params::snareLow,"LOW EQ","140 Hz shelf"},{Params::snareCrack,"CRACK EQ","2.2 kHz peak"},{Params::snareAir,"AIR EQ","8 kHz shelf"},{Params::snareLevel,"LEVEL","Snare output level"}}),
- hat(p,DrumEngine::hat,"HI-HAT",{{Params::hatTune,"TUNE","Pitch of C3, the lowest note in the Hi-Hat zone"},{Params::hatDecay,"DECAY","Hat envelope time"},{Params::hatTone,"TONE","Filtered-band blend"},{Params::hatHighPass,"HIGH PASS","Hat high-pass cutoff"},{Params::hatLevel,"LEVEL","Hat output level"}})
+:AudioProcessorEditor(&p),audioProcessor(p),master(p.apvts,Params::masterLevel,"MASTER","Overall output level"),
+ kick(p,DrumEngine::kick,"KICK",
+      {{Params::kickTune,"PITCH","Fundamental pitch at the zone root"},{Params::kickSweep,"PUNCH","Initial downward pitch sweep"},{Params::kickDecay,"DECAY","Body decay time"},{Params::kickClick,"CLICK","Short filtered-noise transient"},{Params::kickDrive,"DRIVE","Compensated soft saturation"},{Params::kickLevel,"LEVEL","Kick output level"}},
+      {{Params::kickRepeatCount,"REPEATS","Off or 1–10 synthesized hits after the original"},{Params::kickRepeatTime,"TIME","Neutral spacing; 10–500 ms"},{Params::kickRepeatShape,"SHAPE","Higher values pull early repeats forward and fade the burst faster"}}),
+ snare(p,DrumEngine::snare,"SNARE",
+      {{Params::snareTune,"PITCH","Fundamental shell pitch at the zone root"},{Params::snareDecay,"DECAY","Body and wire decay time"},{Params::snareSnappy,"SNAPPY","Tonal-body to noise-wire balance"},{Params::snareTone,"TONE","Noise-wire low-pass cutoff"},{Params::snareDrive,"DRIVE","Compensated soft saturation"},{Params::snareLevel,"LEVEL","Snare output level"}},
+      {{Params::snareRepeatCount,"REPEATS","Off or 1–10 synthesized hits after the original"},{Params::snareRepeatTime,"TIME","Neutral spacing; 10–500 ms"},{Params::snareRepeatShape,"SHAPE","Higher values pull early repeats forward and fade the burst faster"}}),
+ hat(p,DrumEngine::hat,"HI-HAT",
+      {{Params::hatTune,"PITCH","Metallic oscillator-bank tuning"},{Params::hatDecay,"DECAY","Hi-hat envelope time"},{Params::hatTone,"TONE","Dark-to-bright metallic band blend"},{Params::hatHighPass,"CHARACTER","High-pass frequency and metallic weight"},{Params::hatLevel,"LEVEL","Hi-hat output level"}},
+      {{Params::hatRepeatCount,"REPEATS","Off or 1–10 synthesized hits after the original"},{Params::hatRepeatTime,"TIME","Neutral spacing; 10–500 ms"},{Params::hatRepeatShape,"SHAPE","Higher values pull early repeats forward and fade the burst faster"}}),
+ tom(p,DrumEngine::tom,"TOM",
+      {{Params::tomTune,"PITCH","Fundamental electronic-tom pitch"},{Params::tomSweep,"BEND","Fast initial downward pitch bend"},{Params::tomDecay,"DECAY","Resonant body decay time"},{Params::tomTone,"DAMPING","Brightness, bend speed, and secondary-mode colour"},{Params::tomAttack,"ATTACK","Short synthesized stick-noise transient"},{Params::tomLevel,"LEVEL","Tom output level"}},
+      {{Params::tomRepeatCount,"REPEATS","Off or 1–10 synthesized hits after the original"},{Params::tomRepeatTime,"TIME","Neutral spacing; 10–500 ms"},{Params::tomRepeatShape,"SHAPE","Higher values pull early repeats forward and fade the burst faster"}})
 {
-    setLookAndFeel(&look);logo.setText("PATTY PUNCH",juce::dontSendNotification);logo.setFont(juce::FontOptions(30,juce::Font::bold));subtitle.setText("THREE-VOICE ANALOG DRUM SYNTHESIZER",juce::dontSendNotification);
+    setLookAndFeel(&look);logo.setText("PATTY PUNCH",juce::dontSendNotification);logo.setFont(juce::FontOptions(30,juce::Font::bold));subtitle.setText("FOUR-VOICE ANALOG DRUM SYNTHESIZER",juce::dontSendNotification);
     warblerTitle.setText("WARBLER",juce::dontSendNotification);warblerTitle.setFont(juce::FontOptions(18,juce::Font::bold));warblerTitle.setColour(juce::Label::textColourId,juce::Colour(0xffffd69b));
     warblerSubtitle.setText("4  CROSS-MOD LFO",juce::dontSendNotification);warblerSubtitle.setFont(juce::FontOptions(11,juce::Font::bold));warblerSubtitle.setColour(juce::Label::textColourId,cream.withAlpha(.6f));
     choke.setTooltip("Fade old hats when a new hat triggers");
     chokeAttachment=std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(p.apvts,Params::hatChoke,choke);
     const juce::Colour accents[]{juce::Colour(0xffffb58f),juce::Colour(0xff8fe3c3),juce::Colour(0xffaeb8ff),juce::Colour(0xffffdf8a)};
     const char*rates[]{Params::lfoRate,Params::lfo2Rate,Params::lfo3Rate,Params::lfo4Rate};const char*shapes[]{Params::lfoShape,Params::lfo2Shape,Params::lfo3Shape,Params::lfo4Shape};
-    const char*pitches[]{Params::lfoPitch,Params::lfo2Pitch,Params::lfo3Pitch,Params::lfo4Pitch};const char*decays[]{Params::lfoDecay,Params::lfo2Decay,Params::lfo3Decay,Params::lfo4Decay};
     const char*sources[]{Params::lfo1ModFrom,Params::lfo2ModFrom,Params::lfo3ModFrom,Params::lfo4ModFrom};const char*warps[]{Params::lfo1Warp,Params::lfo2Warp,Params::lfo3Warp,Params::lfo4Warp};
-    for(size_t i=0;i<lfoCount;++i)lfoCards[i]=std::make_unique<LfoCard>(p,i,accents[i],rates[i],shapes[i],pitches[i],decays[i],sources[i],warps[i]);
-    std::array<juce::Component*,10> components { &logo,&subtitle,&master,&kick,&snare,&hat,&warblerTitle,&warblerSubtitle,&choke,lfoCards[0].get() };
+    for(size_t i=0;i<lfoCount;++i)lfoCards[i]=std::make_unique<LfoCard>(p,i,accents[i],rates[i],shapes[i],sources[i],warps[i],Params::lfoTargetA[i],Params::lfoDepthA[i],Params::lfoTargetB[i],Params::lfoDepthB[i]);
+    std::array<juce::Component*,11> components { &logo,&subtitle,&master,&kick,&snare,&hat,&tom,&warblerTitle,&warblerSubtitle,&choke,lfoCards[0].get() };
     for(auto* c:components)addAndMakeVisible(c);
     for(size_t i=1;i<lfoCount;++i)addAndMakeVisible(*lfoCards[i]);
-    setWantsKeyboardFocus(true);setResizable(true,true);setResizeLimits(1000,680,1600,1050);setSize(1200,760);startTimerHz(36);
+    setWantsKeyboardFocus(true);setResizable(true,true);setResizeLimits(1180,760,1900,1200);setSize(1500,900);startTimerHz(36);
 }
 PattyPunchAudioProcessorEditor::~PattyPunchAudioProcessorEditor(){setLookAndFeel(nullptr);}
 void PattyPunchAudioProcessorEditor::paint(juce::Graphics&g)
@@ -160,18 +186,18 @@ void PattyPunchAudioProcessorEditor::resized()
 {
     auto r=getLocalBounds().reduced(22);auto header=r.removeFromTop(78);logo.setBounds(header.removeFromLeft(290).removeFromTop(40));subtitle.setBounds(25,55,300,20);master.setBounds(header.removeFromRight(100));choke.setBounds(header.removeFromRight(96).reduced(8,24));
     meterBounds=header.withSizeKeepingCentre(juce::jmax(40,header.getWidth()-28),12);
-    auto warbler=r.removeFromBottom(248);auto heading=warbler.removeFromTop(28);warblerTitle.setBounds(heading.removeFromLeft(112));warblerSubtitle.setBounds(heading.removeFromLeft(160));
-    auto panels=r;auto w=panels.getWidth()/3;kick.setBounds(panels.removeFromLeft(w).reduced(4));snare.setBounds(panels.removeFromLeft(w).reduced(4));hat.setBounds(panels.reduced(4));
+    auto warbler=r.removeFromBottom(282);auto heading=warbler.removeFromTop(28);warblerTitle.setBounds(heading.removeFromLeft(112));warblerSubtitle.setBounds(heading.removeFromLeft(160));
+    auto panels=r;auto w=panels.getWidth()/4;kick.setBounds(panels.removeFromLeft(w).reduced(4));snare.setBounds(panels.removeFromLeft(w).reduced(4));hat.setBounds(panels.removeFromLeft(w).reduced(4));tom.setBounds(panels.reduced(4));
     const auto cardWidth=warbler.getWidth()/static_cast<int>(lfoCount);for(size_t i=0;i<lfoCount;++i)lfoCards[i]->setBounds((i+1==lfoCount?warbler:warbler.removeFromLeft(cardWidth)).reduced(3));
 }
 bool PattyPunchAudioProcessorEditor::keyPressed(const juce::KeyPress&k)
 {
     const auto c=juce::CharacterFunctions::toLowerCase(k.getTextCharacter());
-    if(c=='a')processor.enqueuePad(DrumEngine::kick);else if(c=='s')processor.enqueuePad(DrumEngine::snare);else if(c=='d')processor.enqueuePad(DrumEngine::hat);else return false;return true;
+    if(c=='a')audioProcessor.enqueuePad(DrumEngine::kick);else if(c=='s')audioProcessor.enqueuePad(DrumEngine::snare);else if(c=='d')audioProcessor.enqueuePad(DrumEngine::hat);else if(c=='f')audioProcessor.enqueuePad(DrumEngine::tom);else return false;return true;
 }
 void PattyPunchAudioProcessorEditor::timerCallback()
 {
-    const auto m=processor.getMeter();if(std::abs(m-meter)>.003f){meter=m;repaint(meterBounds.expanded(2));}
+    const auto m=audioProcessor.getMeter();if(std::abs(m-meter)>.003f){meter=m;repaint(meterBounds.expanded(2));}
     for(auto&card:lfoCards)card->update();
-    kick.update();snare.update();hat.update();
+    kick.update();snare.update();hat.update();tom.update();
 }
